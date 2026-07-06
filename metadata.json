@@ -1,0 +1,6 @@
+{
+  "name": "سادات رايد",
+  "description": "منصة سادات رايد لحجز وتتبع الرحلات بمدينة السادات - واجهة ذكية، مريحة وآمنة.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
