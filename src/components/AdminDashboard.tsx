@@ -2,9 +2,10 @@ import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { 
   Users, Car, Navigation, DollarSign, Settings, Bell, LogOut, CheckCircle, 
-  XCircle, Sliders, Shield, RefreshCw, Layers, TrendingUp, AlertCircle
+  XCircle, Sliders, Shield, RefreshCw, Layers, TrendingUp, AlertCircle, ShieldAlert, Percent
 } from 'lucide-react';
-import { User, Ride, PricingSettings, RideStatus } from '../types';
+import { User, Ride, PricingSettings, RideStatus, Zone } from '../types';
+import { getZones, updateZonePricing } from '../utils/db';
 
 interface AdminDashboardProps {
   admin: User;
@@ -15,6 +16,7 @@ interface AdminDashboardProps {
   onUpdatePricing: (pricing: PricingSettings) => void;
   onApproveCaptain: (captainId: string) => void;
   onCancelRideByAdmin: (rideId: string) => void;
+  onUpdateUserStatus: (userId: string, isActive: boolean) => void;
 }
 
 export default function AdminDashboard({
@@ -25,7 +27,8 @@ export default function AdminDashboard({
   pricingSettings,
   onUpdatePricing,
   onApproveCaptain,
-  onCancelRideByAdmin
+  onCancelRideByAdmin,
+  onUpdateUserStatus
 }: AdminDashboardProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'captains' | 'riders' | 'rides' | 'pricing'>('overview');
   
@@ -38,12 +41,43 @@ export default function AdminDashboard({
   const [scooterPerKm, setScooterPerKm] = useState(pricingSettings.scooterPerKm);
   
   const [pricingSuccess, setPricingSuccess] = useState(false);
+  const [zones, setZones] = useState<Zone[]>(() => getZones());
 
   // Computed metrics
   const riders = registeredUsers.filter((u) => u.role === 'rider');
   const captains = registeredUsers.filter((u) => u.role === 'captain');
   const completedRides = activeRides.filter((r) => r.status === 'completed');
   const platformRevenue = completedRides.reduce((acc, curr) => acc + (curr.price * 0.15), 0); // 15% platform commission
+
+  // Advanced Statistics Calculator (Daily, Weekly, Monthly)
+  const getPeriodStats = (days: number) => {
+    const now = new Date();
+    const cutoffDate = new Date();
+    cutoffDate.setDate(now.getDate() - days);
+    
+    const filtered = completedRides.filter(r => {
+      const rideDate = new Date(r.createdAt);
+      if (days === 0) {
+        return rideDate.toDateString() === now.toDateString();
+      }
+      return rideDate >= cutoffDate;
+    });
+
+    const totalFares = filtered.reduce((acc, curr) => acc + curr.price, 0);
+    const commission = filtered.reduce((acc, curr) => acc + (curr.commissionAmount || (curr.price * 0.15)), 0);
+    const captainEarnings = totalFares - commission;
+
+    return {
+      count: filtered.length,
+      totalFares,
+      commission,
+      captainEarnings
+    };
+  };
+
+  const dailyStats = getPeriodStats(0);
+  const weeklyStats = getPeriodStats(7);
+  const monthlyStats = getPeriodStats(30);
 
   const handleSavePricing = (e: React.FormEvent) => {
     e.preventDefault();
@@ -55,6 +89,13 @@ export default function AdminDashboard({
       scooterBase,
       scooterPerKm
     });
+    setPricingSuccess(true);
+    setTimeout(() => setPricingSuccess(false), 2000);
+  };
+
+  const handleSaveZonePricing = (zoneId: string, basePrice: number, minFare: number) => {
+    const updated = updateZonePricing(zoneId, basePrice, minFare);
+    setZones(updated);
     setPricingSuccess(true);
     setTimeout(() => setPricingSuccess(false), 2000);
   };
@@ -217,6 +258,99 @@ export default function AdminDashboard({
                 </div>
               </div>
 
+              {/* Advanced Period Statistics */}
+              <div className="glass-card rounded-3xl p-6 space-y-4" id="advanced-stats-section">
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <TrendingUp className="w-5 h-5 text-orange-400" />
+                    <span>تفاصيل الأرباح وإحصائيات الرحلات الدورية (السادات رايد)</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-300 opacity-80 mt-1">
+                    متابعة وتدقيق الإيرادات وعمولات المنصة وصافي أرباح الكباتن مقسمة زمنياً لليوم، الأسبوع والشهر.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {/* Daily Card */}
+                  <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-3">
+                    <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                      <span className="font-bold text-slate-200 text-xs">إحصائيات اليوم (اليومية)</span>
+                      <span className="text-[10px] bg-orange-500/10 text-orange-400 px-2 py-0.5 rounded border border-orange-500/20">اليوم</span>
+                    </div>
+                    <div className="space-y-1.5 text-xs text-slate-300">
+                      <div className="flex justify-between">
+                        <span>الرحلات المكتملة:</span>
+                        <span className="font-bold text-white">{dailyStats.count} مشاوير</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>إجمالي حجم التداول:</span>
+                        <span className="font-bold text-white">{dailyStats.totalFares} ج.م</span>
+                      </div>
+                      <div className="flex justify-between text-orange-400">
+                        <span>عمولة المنصة الصافية:</span>
+                        <span className="font-bold">{dailyStats.commission.toFixed(1)} ج.م</span>
+                      </div>
+                      <div className="flex justify-between text-emerald-400 border-t border-white/5 pt-1.5 mt-1.5">
+                        <span>صافي أرباح الكباتن:</span>
+                        <span className="font-bold">{dailyStats.captainEarnings.toFixed(1)} ج.م</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Weekly Card */}
+                  <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-3">
+                    <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                      <span className="font-bold text-slate-200 text-xs">إحصائيات الأسبوع (7 أيام)</span>
+                      <span className="text-[10px] bg-orange-500/10 text-orange-400 px-2 py-0.5 rounded border border-orange-500/20">أسبوعي</span>
+                    </div>
+                    <div className="space-y-1.5 text-xs text-slate-300">
+                      <div className="flex justify-between">
+                        <span>الرحلات المكتملة:</span>
+                        <span className="font-bold text-white">{weeklyStats.count} مشاوير</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>إجمالي حجم التداول:</span>
+                        <span className="font-bold text-white">{weeklyStats.totalFares} ج.م</span>
+                      </div>
+                      <div className="flex justify-between text-orange-400">
+                        <span>عمولة المنصة الصافية:</span>
+                        <span className="font-bold">{weeklyStats.commission.toFixed(1)} ج.م</span>
+                      </div>
+                      <div className="flex justify-between text-emerald-400 border-t border-white/5 pt-1.5 mt-1.5">
+                        <span>صافي أرباح الكباتن:</span>
+                        <span className="font-bold">{weeklyStats.captainEarnings.toFixed(1)} ج.م</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Monthly Card */}
+                  <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-3">
+                    <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                      <span className="font-bold text-slate-200 text-xs">إحصائيات الشهر (30 يوم)</span>
+                      <span className="text-[10px] bg-orange-500/10 text-orange-400 px-2 py-0.5 rounded border border-orange-500/20">شهري</span>
+                    </div>
+                    <div className="space-y-1.5 text-xs text-slate-300">
+                      <div className="flex justify-between">
+                        <span>الرحلات المكتملة:</span>
+                        <span className="font-bold text-white">{monthlyStats.count} مشاوير</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>إجمالي حجم التداول:</span>
+                        <span className="font-bold text-white">{monthlyStats.totalFares} ج.م</span>
+                      </div>
+                      <div className="flex justify-between text-orange-400">
+                        <span>عمولة المنصة الصافية:</span>
+                        <span className="font-bold">{monthlyStats.commission.toFixed(1)} ج.م</span>
+                      </div>
+                      <div className="flex justify-between text-emerald-400 border-t border-white/5 pt-1.5 mt-1.5">
+                        <span>صافي أرباح الكباتن:</span>
+                        <span className="font-bold">{monthlyStats.captainEarnings.toFixed(1)} ج.م</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               {/* Status information info panel */}
               <div className="bg-orange-500/10 border border-orange-500/20 rounded-3xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
                 <div className="space-y-1 text-right">
@@ -276,6 +410,7 @@ export default function AdminDashboard({
                         <th className="pb-3 pt-2 px-4">أرقام اللوحات</th>
                         <th className="pb-3 pt-2 px-4">رصيد الحساب</th>
                         <th className="pb-3 pt-2 px-4">الحالة للعمل</th>
+                        <th className="pb-3 pt-2 px-4">التحكم والنشاط</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5">
@@ -292,6 +427,26 @@ export default function AdminDashboard({
                             }`}>
                               {captain.isOnline ? 'مستقبل للطلبات' : 'مغلق'}
                             </span>
+                          </td>
+                          <td className="py-4 px-4">
+                            <div className="flex items-center gap-2">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${
+                                captain.isActive !== false ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                              }`}>
+                                {captain.isActive !== false ? 'نشط' : 'موقوف'}
+                              </span>
+                              <button
+                                id={`toggle-active-${captain.id}`}
+                                onClick={() => onUpdateUserStatus(captain.id, captain.isActive !== false ? false : true)}
+                                className={`px-2 py-1 text-[11px] font-black rounded-lg transition-all ${
+                                  captain.isActive !== false 
+                                    ? 'bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-900/30' 
+                                    : 'bg-emerald-950/60 hover:bg-emerald-900 text-emerald-300 border border-emerald-900/30'
+                                }`}
+                              >
+                                {captain.isActive !== false ? 'إيقاف السائق' : 'تفعيل السائق'}
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -325,6 +480,7 @@ export default function AdminDashboard({
                         <th className="pb-3 pt-2 px-4">الرصيد المتوفر</th>
                         <th className="pb-3 pt-2 px-4">التقييم</th>
                         <th className="pb-3 pt-2 px-4">تاريخ الانضمام</th>
+                        <th className="pb-3 pt-2 px-4">حالة الحساب والتحكم</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5">
@@ -337,6 +493,26 @@ export default function AdminDashboard({
                           <td className="py-4 px-4">⭐ {rider.rating.toFixed(1)}</td>
                           <td className="py-4 px-4 text-xs text-slate-400">
                             {new Date(rider.createdAt).toLocaleDateString('ar-EG')}
+                          </td>
+                          <td className="py-4 px-4">
+                            <div className="flex items-center gap-2">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${
+                                rider.isActive !== false ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                              }`}>
+                                {rider.isActive !== false ? 'نشط' : 'موقوف'}
+                              </span>
+                              <button
+                                id={`toggle-active-rider-${rider.id}`}
+                                onClick={() => onUpdateUserStatus(rider.id, rider.isActive !== false ? false : true)}
+                                className={`px-2 py-1 text-[11px] font-black rounded-lg transition-all ${
+                                  rider.isActive !== false 
+                                    ? 'bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-900/30' 
+                                    : 'bg-emerald-950/60 hover:bg-emerald-900 text-emerald-300 border border-emerald-900/30'
+                                }`}
+                              >
+                                {rider.isActive !== false ? 'إيقاف الراكب' : 'تفعيل الراكب'}
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -441,18 +617,85 @@ export default function AdminDashboard({
           {activeTab === 'pricing' && (
             <div className="glass-card rounded-3xl p-6 space-y-6" id="pricing-tab-content">
               <div>
-                <h3 className="text-lg font-bold text-white">تعرفة المشاوير والأجرة الأساسية</h3>
-                <p className="text-xs text-slate-300 opacity-80 mt-1">ضبط سعر البداية والتعرفة لكل كيلومتر لجميع المركبات في مدينة السادات.</p>
+                <h3 className="text-lg font-bold text-white">إدارة تعرفة وتسعير المناطق والمركبات</h3>
+                <p className="text-xs text-slate-300 opacity-80 mt-1">
+                  تحديد سعر البداية والحد الأدنى للتسعير لكل منطقة مقسمة بمدينة السادات، بالإضافة للتسعير الأساسي للمركبات.
+                </p>
               </div>
 
               {pricingSuccess && (
                 <div className="bg-orange-500/10 border border-orange-500/20 text-orange-400 text-xs p-4 rounded-xl flex items-center gap-2">
                   <CheckCircle className="w-5 h-5" />
-                  <span>تم حفظ وتحديث تعريفة أسعار المشاوير بنجاح! سيتم تطبيقها فوراً على الحجوزات الجديدة للعملاء.</span>
+                  <span>تم حفظ وتحديث تعريفة أسعار المشاوير والمناطق بنجاح!</span>
                 </div>
               )}
 
+              {/* Zone-based Pricing Section */}
+              <div className="space-y-4">
+                <h4 className="font-bold text-white text-sm flex items-center gap-2">
+                  <Layers className="w-5 h-5 text-orange-400" />
+                  <span>تسعير وتقسيم مناطق السادات</span>
+                </h4>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {zones.map((zone) => (
+                    <div key={zone.id} className="bg-white/5 border border-white/10 p-5 rounded-2xl space-y-4">
+                      <div>
+                        <span className="font-bold text-orange-400 text-xs block">{zone.name}</span>
+                        <p className="text-[10px] text-slate-300 opacity-70 mt-1">
+                          المعالم: {zone.landmarks.slice(0, 3).join('، ')}...
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[10px] text-slate-400 mb-1">سعر البداية (ج.م)</label>
+                          <input
+                            type="number"
+                            value={zone.basePrice}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value) || 0;
+                              setZones(prev => prev.map(z => z.id === zone.id ? { ...z, basePrice: val } : z));
+                            }}
+                            className="block w-full bg-slate-900 border border-white/10 rounded-lg px-2.5 py-1.5 text-white text-right text-xs focus:outline-none focus:border-orange-500/50"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-slate-400 mb-1">الحد الأدنى (ج.م)</label>
+                          <input
+                            type="number"
+                            value={zone.minFare}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value) || 0;
+                              setZones(prev => prev.map(z => z.id === zone.id ? { ...z, minFare: val } : z));
+                            }}
+                            className="block w-full bg-slate-900 border border-white/10 rounded-lg px-2.5 py-1.5 text-white text-right text-xs focus:outline-none focus:border-orange-500/50"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end pt-1">
+                        <button
+                          type="button"
+                          id={`save-zone-btn-${zone.id}`}
+                          onClick={() => handleSaveZonePricing(zone.id, zone.basePrice, zone.minFare)}
+                          className="px-3 py-1 bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs rounded-lg transition-all"
+                        >
+                          حفظ تسعير المنطقة
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="border-t border-white/10 my-6" />
+
               <form onSubmit={handleSavePricing} className="space-y-6">
+                <h4 className="font-bold text-white text-sm flex items-center gap-2">
+                  <Sliders className="w-5 h-5 text-orange-400" />
+                  <span>عوامل تصفية المركبات والتوصيل</span>
+                </h4>
                 
                 {/* Economy pricing group */}
                 <div className="bg-white/5 border border-white/10 p-5 rounded-2xl space-y-4">
@@ -555,7 +798,7 @@ export default function AdminDashboard({
                   type="submit"
                   className="w-full py-3.5 bg-orange-600 hover:bg-orange-500 text-white font-bold rounded-xl transition-all shadow-lg"
                 >
-                  تحديث وحفظ كافة الأسعار والتعرفة
+                  تحديث وحفظ كافة أسعار وخصائص المركبات
                 </button>
               </form>
             </div>

@@ -5,7 +5,7 @@ import Login from './components/Login';
 import SignUp from './components/SignUp';
 import UserDashboard from './components/UserDashboard';
 import AdminDashboard from './components/AdminDashboard';
-import { initDatabase, getAllUsers, registerNewUser, updateUserData } from './utils/db';
+import { initDatabase, getAllUsers, registerNewUser, updateUserData, registerNewRide, updateRideInDb, getAllRides, processRidePayment, updateUserStatus } from './utils/db';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -25,46 +25,93 @@ export default function App() {
     scooterPerKm: 1.0
   });
 
-  // Initialize DB and load registered users
+  // Initialize DB, load registered users and rides, and setup database sync polling
   useEffect(() => {
     const bootstrap = async () => {
       try {
         await initDatabase();
-        const users = await getAllUsers();
+        const [users, rides] = await Promise.all([
+          getAllUsers(),
+          getAllRides()
+        ]);
         setRegisteredUsers(users);
+        setActiveRides(rides);
+
+        // Check if there is an active session
+        const savedUser = sessionStorage.getItem('sadat_session');
+        if (savedUser) {
+          try {
+            const parsed = JSON.parse(savedUser);
+            // Verify user still exists
+            const userExists = users.find(u => u.id === parsed.id || u.phone === parsed.phone);
+            if (userExists) {
+              setCurrentUser(userExists);
+              setCurrentView('dashboard');
+            }
+          } catch (e) {
+            console.warn('Failed to parse saved session');
+          }
+        }
       } catch (err) {
         console.error('Failed to initialize database:', err);
       }
     };
     bootstrap();
+
+    // Database polling for active cross-session sync
+    const interval = setInterval(async () => {
+      try {
+        const [users, rides] = await Promise.all([
+          getAllUsers(),
+          getAllRides()
+        ]);
+        setRegisteredUsers(users);
+        setActiveRides(rides);
+
+        // Keep current user state synchronized
+        setCurrentUser(prevUser => {
+          if (!prevUser) return null;
+          const fresh = users.find(u => u.id === prevUser.id);
+          return fresh || prevUser;
+        });
+      } catch (e) {
+        console.warn('Database polling failed:', e);
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
   }, []);
 
   // Authentication callbacks
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
+    sessionStorage.setItem('sadat_session', JSON.stringify(user));
     setCurrentView('dashboard');
   };
 
-  const handleSignUpSuccess = async (newUser: User) => {
+  const handleSignUpSuccess = async (newUser: User, password?: string) => {
     try {
       // Save to database
-      await registerNewUser(newUser, '123456');
+      await registerNewUser(newUser, password || '123456');
       const users = await getAllUsers();
       setRegisteredUsers(users);
       // Automatically log them in
       setCurrentUser(newUser);
+      sessionStorage.setItem('sadat_session', JSON.stringify(newUser));
       setCurrentView('dashboard');
     } catch (err) {
       console.error('Error during sign up database sync:', err);
       // Fallback
       setRegisteredUsers((prev) => [...prev, newUser]);
       setCurrentUser(newUser);
+      sessionStorage.setItem('sadat_session', JSON.stringify(newUser));
       setCurrentView('dashboard');
     }
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
+    sessionStorage.removeItem('sadat_session');
     setCurrentView('login');
   };
 
@@ -72,11 +119,13 @@ export default function App() {
     try {
       await updateUserData(updatedUser);
       setCurrentUser(updatedUser);
+      sessionStorage.setItem('sadat_session', JSON.stringify(updatedUser));
       const users = await getAllUsers();
       setRegisteredUsers(users);
     } catch (err) {
       console.error('Error during user update database sync:', err);
       setCurrentUser(updatedUser);
+      sessionStorage.setItem('sadat_session', JSON.stringify(updatedUser));
       setRegisteredUsers((prev) =>
         prev.map((u) => (u.id === updatedUser.id ? updatedUser : u))
       );
@@ -84,37 +133,18 @@ export default function App() {
   };
 
   // Ride Management callbacks
-  const handleCreateRide = (ride: Ride) => {
-    setActiveRides((prev) => [ride, ...prev]);
-
-    // Simulate auto-assigning a captain after 5 seconds if a captain is active and online!
-    const availableCaptain = registeredUsers.find(
-      (u) => u.role === 'captain' && u.isOnline && !activeRides.some(r => r.captainId === u.id && r.status !== 'completed' && r.status !== 'cancelled')
-    );
-
-    if (availableCaptain) {
-      setTimeout(() => {
-        setActiveRides((prevRides) =>
-          prevRides.map((r) =>
-            r.id === ride.id
-              ? {
-                  ...r,
-                  status: 'accepted',
-                  captainId: availableCaptain.id,
-                  captainName: availableCaptain.name,
-                  captainPhone: availableCaptain.phone,
-                  captainRating: availableCaptain.rating,
-                  captainCar: availableCaptain.carDetails?.model || 'سيارة ملاكي',
-                  captainCarPlate: availableCaptain.carDetails?.plate || 'سادات 1'
-                }
-              : r
-          )
-        );
-      }, 4000);
+  const handleCreateRide = async (ride: Ride) => {
+    try {
+      await registerNewRide(ride);
+      const rides = await getAllRides();
+      setActiveRides(rides);
+    } catch (err) {
+      console.error('Failed to create ride in database:', err);
+      setActiveRides((prev) => [ride, ...prev]);
     }
   };
 
-  const handleUpdateRideStatus = (
+  const handleUpdateRideStatus = async (
     rideId: string,
     status: RideStatus,
     captainId?: string,
@@ -123,24 +153,78 @@ export default function App() {
     captainCar?: string,
     captainCarPlate?: string
   ) => {
-    setActiveRides((prev) =>
-      prev.map((r) => {
-        if (r.id === rideId) {
-          return {
-            ...r,
-            status,
-            ...(captainId && { captainId, captainName, captainPhone, captainCar, captainCarPlate })
-          };
+    try {
+      let captainDetails = undefined;
+      if (captainId) {
+        const cpt = registeredUsers.find(u => u.id === captainId);
+        captainDetails = {
+          id: captainId,
+          name: captainName || '',
+          phone: captainPhone || '',
+          carModel: captainCar || 'سيارة ملاكي',
+          carPlate: captainCarPlate || 'سادات 1',
+          rating: cpt?.rating || 4.9
+        };
+      }
+
+      if (status === 'completed') {
+        const ride = activeRides.find(r => r.id === rideId);
+        const paymentMethodSelected = ride?.paymentMethod || 'cash';
+        
+        // Process the payments, wallet changes, system commission, and transaction logging
+        const result = await processRidePayment(rideId, paymentMethodSelected);
+        if (!result.success) {
+          alert(result.message);
+          return;
         }
-        return r;
-      })
-    );
+      } else {
+        await updateRideInDb(rideId, status, captainDetails);
+      }
+
+      // Sync states across the application instantly
+      const [users, rides] = await Promise.all([
+        getAllUsers(),
+        getAllRides()
+      ]);
+      setRegisteredUsers(users);
+      setActiveRides(rides);
+
+      // Keep current user state synchronized
+      if (currentUser) {
+        const freshUser = users.find(u => u.id === currentUser.id);
+        if (freshUser) {
+          setCurrentUser(freshUser);
+          sessionStorage.setItem('sadat_session', JSON.stringify(freshUser));
+        }
+      }
+    } catch (err) {
+      console.error('Failed to update ride status in database:', err);
+      setActiveRides((prev) =>
+        prev.map((r) => {
+          if (r.id === rideId) {
+            return {
+              ...r,
+              status,
+              ...(captainId && { captainId, captainName, captainPhone, captainCar, captainCarPlate })
+            };
+          }
+          return r;
+        })
+      );
+    }
   };
 
-  const handleCancelRideByAdmin = (rideId: string) => {
-    setActiveRides((prev) =>
-      prev.map((r) => (r.id === rideId ? { ...r, status: 'cancelled' } : r))
-    );
+  const handleCancelRideByAdmin = async (rideId: string) => {
+    try {
+      await updateRideInDb(rideId, 'cancelled');
+      const rides = await getAllRides();
+      setActiveRides(rides);
+    } catch (err) {
+      console.error('Failed to cancel ride in database:', err);
+      setActiveRides((prev) =>
+        prev.map((r) => (r.id === rideId ? { ...r, status: 'cancelled' } : r))
+      );
+    }
   };
 
   const handleApproveCaptain = async (captainId: string) => {
@@ -156,6 +240,19 @@ export default function App() {
       console.error('Error during captain approval database sync:', err);
       setRegisteredUsers((prev) =>
         prev.map((u) => (u.id === captainId ? { ...u, isApproved: true } : u))
+      );
+    }
+  };
+
+  const handleUpdateUserStatus = async (userId: string, isActive: boolean) => {
+    try {
+      await updateUserStatus(userId, isActive);
+      const users = await getAllUsers();
+      setRegisteredUsers(users);
+    } catch (err) {
+      console.error('Error during status update:', err);
+      setRegisteredUsers((prev) =>
+        prev.map((u) => (u.id === userId ? { ...u, isActive } : u))
       );
     }
   };
@@ -213,6 +310,7 @@ export default function App() {
                 onUpdatePricing={setPricingSettings}
                 onApproveCaptain={handleApproveCaptain}
                 onCancelRideByAdmin={handleCancelRideByAdmin}
+                onUpdateUserStatus={handleUpdateUserStatus}
               />
             ) : (
               <UserDashboard
